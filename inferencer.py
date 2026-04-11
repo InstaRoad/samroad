@@ -6,7 +6,7 @@ import cv2
 
 from utils import load_config, create_output_dir_and_save_config
 from dataset import cityscale_data_partition, read_rgb_img, get_patch_info_one_img
-from dataset import spacenet_data_partition
+from dataset import spacenet_data_partition, sentinel2_data_partition
 from model import SAMRoad
 import graph_extraction
 import graph_utils
@@ -57,6 +57,43 @@ def get_batch_img_patches(img, batch_patch_info):
     batch = torch.stack(patches, 0).contiguous()
     return batch
 
+def draw_graph_on_bgr_image(bgr_img, nodes_rc, edges, line_thickness=4, node_radius=4):
+    out = bgr_img.copy()
+
+    for u, v in edges:
+        pt1 = (int(nodes_rc[u][1]), int(nodes_rc[u][0]))
+        pt2 = (int(nodes_rc[v][1]), int(nodes_rc[v][0]))
+        cv2.line(out, pt1, pt2, (15, 160, 253), line_thickness)
+
+    for node in nodes_rc:
+        pt = (int(node[1]), int(node[0]))
+        cv2.circle(out, pt, node_radius, (0, 255, 255), -1)
+
+    return out
+
+
+def make_comparison_grid(orig_rgb, gt_mask, pred_nodes, pred_edges, road_mask):
+    orig_bgr = cv2.cvtColor(orig_rgb, cv2.COLOR_RGB2BGR)
+    gt_mask_bgr = cv2.cvtColor(gt_mask, cv2.COLOR_GRAY2BGR)
+    pred_mask_bgr = cv2.cvtColor(road_mask, cv2.COLOR_GRAY2BGR)
+    viz_img = draw_graph_on_bgr_image(orig_bgr, pred_nodes, pred_edges)
+
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 1.0
+    thickness = 2
+    color = (0, 255, 0)
+
+    cv2.putText(orig_bgr, "Original Image", (20, 40), font, font_scale, color, thickness)
+    cv2.putText(gt_mask_bgr, "Ground Truth Mask", (20, 40), font, font_scale, color, thickness)
+    cv2.putText(viz_img, "Predicted Graph", (20, 40), font, font_scale, color, thickness)
+    cv2.putText(pred_mask_bgr, "Predicted Binary Mask", (20, 40), font, font_scale, color, thickness)
+
+    top_row = np.concatenate((orig_bgr, gt_mask_bgr), axis=1)
+    bottom_row = np.concatenate((viz_img, pred_mask_bgr), axis=1)
+    comparison_grid = np.concatenate((top_row, bottom_row), axis=0)
+
+    return comparison_grid
+
 
 def infer_one_img(net, img, config):
     # TODO(congrui): centralize these configs
@@ -73,7 +110,7 @@ def infer_one_img(net, img, config):
         else patch_num // batch_size + 1
     )
 
-    
+
 
     # [IMG_H, IMG_W]
     fused_keypoint_mask = torch.zeros(img.shape[0:2], dtype=torch.float32).to(args.device, non_blocking=False)
@@ -102,7 +139,7 @@ def infer_one_img(net, img, config):
             fused_keypoint_mask[y0:y1, x0:x1] += keypoint_patch
             fused_road_mask[y0:y1, x0:x1] += road_patch
             pixel_counter[y0:y1, x0:x1] += torch.ones(road_patch.shape[0:2], dtype=torch.float32, device=args.device)
-    
+
     fused_keypoint_mask /= pixel_counter
     fused_road_mask /= pixel_counter
     # range 0-1 -> 0-255
@@ -115,8 +152,8 @@ def infer_one_img(net, img, config):
     # pred_nodes, pred_edges = graph_utils.convert_from_nx(pred_graph)
     # return pred_nodes, pred_edges, fused_keypoint_mask, fused_road_mask
     # ## Astar graph extraction
-    
-    
+
+
     ## Extract sample points from masks
     graph_points = graph_extraction.extract_graph_points(fused_keypoint_mask, fused_road_mask, config)
     if graph_points.shape[0] == 0:
@@ -128,7 +165,7 @@ def infer_one_img(net, img, config):
         x, y = v
         # hack to insert single points
         graph_rtree.insert(i, (x, y, x, y))
-    
+
     ## Pass 2: infer toponet to predict topology of points from stored img features
     edge_scores = defaultdict(float)
     edge_counts = defaultdict(float)
@@ -174,7 +211,7 @@ def infer_one_img(net, img, config):
             topo_data['pairs'].append(pairs)
             topo_data['valid'].append(valid)
             idx_maps.append(idx_patch2all)
-        
+
         # collate
         collated = {}
         for key, x_list in topo_data.items():
@@ -187,7 +224,7 @@ def infer_one_img(net, img, config):
         # skips this batch if there's no points
         if collated['points'].shape[1] == 0:
             continue
-        
+
         # infer toponet
         # [B, D, h, w]
         batch_features = img_features[batch_index]
@@ -200,7 +237,7 @@ def infer_one_img(net, img, config):
         with torch.no_grad():
             # [B, N_samples, N_pairs, 1]
             topo_scores = net.infer_toponet(batch_features, batch_points, batch_pairs, batch_valid)
-                
+
         # all-invalid (padded, no neighbors) queries returns nan scores
         # [B, N_samples, N_pairs]
         topo_scores = torch.where(torch.isnan(topo_scores), -100.0, topo_scores).squeeze(-1).cpu().numpy()
@@ -223,23 +260,23 @@ def infer_one_img(net, img, config):
     # avg edge scores and filter
     pred_edges = []
     for edge, score_sum in edge_scores.items():
-        score = score_sum / edge_counts[edge] 
+        score = score_sum / edge_counts[edge]
         if score > config.TOPO_THRESHOLD:
             pred_edges.append(edge)
     pred_edges = np.array(pred_edges).reshape(-1, 2)
     pred_nodes = graph_points[:, ::-1]  # to rc
-    
-    
+
+
 
     return pred_nodes, pred_edges, fused_keypoint_mask, fused_road_mask
 
-    
+
 
 
 if __name__ == "__main__":
     config = load_config(args.config)
-    
-    # Builds eval model    
+
+    # Builds eval model
     device = torch.device("cuda") if args.device == "cuda" else torch.device("cpu")
     # Good when model architecture/input shape are fixed.
     torch.backends.cudnn.benchmark = True
@@ -261,17 +298,30 @@ if __name__ == "__main__":
         _, _, test_img_indices = spacenet_data_partition()
         rgb_pattern = './spacenet/RGB_1.0_meter/{}__rgb.png'
         gt_graph_pattern = './spacenet/RGB_1.0_meter/{}__gt_graph.p'
-    
+    elif config.DATASET == 'sentinel2':
+        _, _, test_img_indices = sentinel2_data_partition()
+        base_dir = './sentinel2/sentinel2_test_1024'
+        rgb_pattern = os.path.join(base_dir, 'images_1024/{}.png')
+        gt_graph_pattern = os.path.join(base_dir, 'graphs_p/{}.p')
+        gt_mask_pattern = os.path.join(base_dir, 'clean_masks/{}.png')
+
+        test_img_indices = test_img_indices[:100]
+        print(f'Running inference on first {len(test_img_indices)} test images')
+
     output_dir_prefix = './save/infer_'
     if args.output_dir:
         output_dir = create_output_dir_and_save_config(output_dir_prefix, config, specified_dir=f'./save/{args.output_dir}')
     else:
         output_dir = create_output_dir_and_save_config(output_dir_prefix, config)
-    
+
+    comparison_save_dir = os.path.join(output_dir, 'comparison')
+    if not os.path.exists(comparison_save_dir):
+        os.makedirs(comparison_save_dir)
+
     total_inference_seconds = 0.0
 
     for img_id in test_img_indices:
-        print(f'Processing {img_id}')
+        # print(f'Processing {img_id}')
         # [H, W, C] RGB
         img = read_rgb_img(rgb_pattern.format(img_id))
         start_seconds = time.time()
@@ -290,6 +340,20 @@ if __name__ == "__main__":
             # convert ??? -> xy -> rc
             gt_nodes = np.stack([gt_nodes[:, 1], 400 - gt_nodes[:, 0]], axis=1)
             gt_nodes = gt_nodes[:, ::-1]
+
+        # only for sentinel2 which has gt masks, for cityscale/spacenet we can only compare with gt graph
+        if config.DATASET == 'sentinel2':
+            gt_mask_path = gt_mask_pattern.format(img_id)
+            if os.path.exists(gt_mask_path):
+                gt_mask = cv2.imread(gt_mask_path, cv2.IMREAD_GRAYSCALE)
+                if gt_mask.shape[:2] != img.shape[:2]:
+                    gt_mask = cv2.resize(
+                        gt_mask,
+                        (img.shape[1], img.shape[0]),
+                        interpolation=cv2.INTER_NEAREST
+                    )
+            else:
+                gt_mask = np.zeros(img.shape[:2], dtype=np.uint8)
 
         # RGB already
         viz_img = np.copy(img)
@@ -328,6 +392,17 @@ if __name__ == "__main__":
         viz_img = triage.visualize_image_and_graph(viz_img, pred_nodes / img_size, pred_edges, viz_img.shape[0])
         cv2.imwrite(os.path.join(viz_save_dir, f'{img_id}.png'), viz_img)
 
+        # gt_mask is only defined in sentinel 2 dataset if statement
+        if config.DATASET == 'sentinel2':
+            comparison_grid = make_comparison_grid(
+                img,
+                gt_mask,
+                pred_nodes,
+                pred_edges,
+                road_mask,
+            )
+            cv2.imwrite(os.path.join(comparison_save_dir, f'{img_id}_comparison.png'), comparison_grid)
+
         # Saves the large map
         if config.DATASET == 'spacenet':
             # r, c -> ???
@@ -339,9 +414,9 @@ if __name__ == "__main__":
         graph_save_path = os.path.join(graph_save_dir, f'{img_id}.p')
         with open(graph_save_path, 'wb') as file:
             pickle.dump(large_map_sat2graph_format, file)
-        
+
         print(f'Done for {img_id}.')
-    
+
     # log inference time
     time_txt = f'Inference completed for {args.config} in {total_inference_seconds} seconds.'
     print(time_txt)

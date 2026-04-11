@@ -42,11 +42,11 @@ if __name__ == "__main__":
     config = load_config(args.config)
     dev_run = args.dev_run or args.fast_dev_run
 
-    
+
     # start a new wandb run to track this script
     wandb.init(
         # set the wandb project where this run will be logged
-        project="sam_road",
+        project="sam_road_s2",
         # track hyperparameters and run metadata
         config=config,
         # disable wandb if debugging
@@ -57,11 +57,12 @@ if __name__ == "__main__":
     # Good when model architecture/input shape are fixed.
     torch.backends.cudnn.benchmark = True
     torch.backends.cudnn.enabled = True
-    
+
 
     net = SAMRoad(config)
 
-    train_ds, val_ds = SatMapDataset(config, is_train=True, dev_run=dev_run), SatMapDataset(config, is_train=False, dev_run=dev_run)
+    train_ds = SatMapDataset(config, split='train', dev_run=dev_run)
+    val_ds = SatMapDataset(config, split='val', dev_run=dev_run)
 
     train_loader = DataLoader(
         train_ds,
@@ -81,7 +82,16 @@ if __name__ == "__main__":
         collate_fn=graph_collate_fn,
     )
 
-    checkpoint_callback = ModelCheckpoint(every_n_epochs=1, save_top_k=-1)
+    # checkpoint_callback = ModelCheckpoint(every_n_epochs=1, save_top_k=-1) # this saves a checkpoint every epoch, fills disk fast because each epoch is around 1GB
+
+    # Keep the 3 models with the lowest val_loss
+    checkpoint_callback = ModelCheckpoint(
+        monitor="val_loss",
+        mode="min",          
+        save_top_k=3,
+        every_n_epochs=1
+    )
+
     lr_monitor = LearningRateMonitor(logging_interval='step')
 
     wandb_logger = WandbLogger()
@@ -99,6 +109,7 @@ if __name__ == "__main__":
         # strategy='ddp_find_unused_parameters_true',
         precision=args.precision,
         # profiler=profiler
+        enable_progress_bar=False   # to prevent massive logs
         )
 
     trainer.fit(net, train_dataloaders=train_loader, val_dataloaders=val_loader)

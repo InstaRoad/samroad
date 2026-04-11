@@ -53,6 +53,21 @@ def spacenet_data_partition():
     return train_list, val_list, test_list
 
 
+def sentinel2_data_partition():
+    json_path = './sentinel2/data_split.json'
+
+    if not os.path.exists(json_path):
+         raise FileNotFoundError(f"Cannot find {json_path}. Did you run the generation script first?")
+
+    with open(json_path, 'r') as jf:
+        data_list = json.load(jf)
+
+    train_list = data_list['train']
+    val_list = data_list['validation']
+    test_list = data_list['test']
+
+    return train_list, val_list, test_list
+
 def get_patch_info_one_img(image_index, image_size, sample_margin, patch_size, patches_per_edge):
     patch_info = []
     sample_min = sample_margin
@@ -123,7 +138,7 @@ class GraphLabelGenerator():
             interesting_indices.update(nearby_indices)
         self.sample_weights = np.full((point_num, ), 0.1, dtype=np.float32)
         self.sample_weights[list(interesting_indices)] = 0.9
-    
+
     def sample_patch(self, patch, rot_index = 0):
         (x0, y0), (x1, y1) = patch
         query_box = (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
@@ -142,7 +157,7 @@ class GraphLabelGenerator():
             return fake_points, [fake_sample] * sample_num
 
         patch_points = self.subdivide_points[patch_indices, :]
-        
+
         # random scores to emulate different random configurations that all share a
         # similar spacing between sampled points
         # raise scores for intersction points so they are always kept
@@ -150,7 +165,7 @@ class GraphLabelGenerator():
         nms_score_override = self.nms_score_override[patch_indices]
         nms_scores = np.maximum(nms_scores, nms_score_override)
         nms_radius = self.config.ROAD_NMS_RADIUS
-        
+
         # kept_indces are into the patch_points array
         nmsed_points, kept_indices = graph_utils.nms_points(patch_points, nms_scores, radius=nms_radius, return_indices=True)
         # now this is into the subdivide graph
@@ -166,7 +181,7 @@ class GraphLabelGenerator():
             size=sample_num, replace=True, p=sample_weights / np.sum(sample_weights))
         # indices into the subdivided graph
         sample_indices = nmsed_indices[sample_indices_in_nmsed]
-        
+
         radius = self.config.NEIGHBOR_RADIUS
         max_nbr_queries = self.config.MAX_NEIGHBOR_QUERIES  # has to be greater than 1
         nmsed_kdtree = scipy.spatial.KDTree(nmsed_points)
@@ -182,7 +197,7 @@ class GraphLabelGenerator():
             source_node = sample_indices[i]
             valid_nbr_indices = knn_idx[i, knn_idx[i, :] < nmsed_point_num]
             valid_nbr_indices = valid_nbr_indices[1:] # the nearest one is self so remove
-            target_nodes = [nmsed_indices[ni] for ni in valid_nbr_indices]  
+            target_nodes = [nmsed_indices[ni] for ni in valid_nbr_indices]
 
             ### BFS to find immediate neighbors on graph
             reached_nodes = graph_utils.bfs_with_conditions(self.full_graph_subdivide, source_node, set(target_nodes), radius // self.subdivide_resolution)
@@ -223,13 +238,13 @@ class GraphLabelGenerator():
         ], dtype=np.float32)
         nmsed_points = nmsed_points @ trans.T @ np.linalg.matrix_power(rot.T, rot_index) @ np.linalg.inv(trans.T)
         nmsed_points = nmsed_points[:, :2]
-            
+
         # Add noise
         noise_scale = 1.0  # pixels
         nmsed_points += np.random.normal(0.0, noise_scale, size=nmsed_points.shape)
 
         return nmsed_points, samples
-    
+
 
 def test_graph_label_generator():
     if not os.path.exists('debug'):
@@ -246,7 +261,7 @@ def test_graph_label_generator():
         # Load GT Graph
         gt_graph = pickle.load(open(f"spacenet/RGB_1.0_meter/AOI_2_Vegas_210__gt_graph.p",'rb'))
         # gt_graph = pickle.load(open(f"spacenet/RGB_1.0_meter/AOI_4_Shanghai_1061__gt_graph_dense_spacenet.p",'rb'))
-        
+
         coord_transform = lambda v : np.stack([v[:, 1], 400 - v[:, 0]], axis=1)
         # coord_transform = lambda v : v[:, ::-1]
     rgb = read_rgb_img(rgb_path)
@@ -283,7 +298,7 @@ def test_graph_label_generator():
                     )
         cv2.imwrite(f'debug/viz_{i}.png', rgb_patch)
 
-        
+
 def graph_collate_fn(batch):
     keys = batch[0].keys()
     collated = {}
@@ -304,10 +319,10 @@ def graph_collate_fn(batch):
 
 
 class SatMapDataset(Dataset):
-    def __init__(self, config, is_train, dev_run=False):
+    def __init__(self, config, split='train', dev_run=False):
         self.config = config
-        
-        assert self.config.DATASET in {'cityscale', 'spacenet'}
+
+        assert self.config.DATASET in {'cityscale', 'spacenet', 'sentinel2'}
         if self.config.DATASET == 'cityscale':
             self.IMAGE_SIZE = 2048
             # TODO: SAMPLE_MARGIN here is for training, the one in config is for inference
@@ -317,7 +332,7 @@ class SatMapDataset(Dataset):
             keypoint_mask_pattern = './cityscale/processed/keypoint_mask_{}.png'
             road_mask_pattern = './cityscale/processed/road_mask_{}.png'
             gt_graph_pattern = './cityscale/20cities/region_{}_refine_gt_graph.p'
-            
+
             train, val, test = cityscale_data_partition()
 
             # coord-transform = (r, c) -> (x, y)
@@ -332,36 +347,54 @@ class SatMapDataset(Dataset):
             keypoint_mask_pattern = './spacenet/processed/keypoint_mask_{}.png'
             road_mask_pattern = './spacenet/processed/road_mask_{}.png'
             gt_graph_pattern = './spacenet/RGB_1.0_meter/{}__gt_graph.p'
-            
+
             train, val, test = spacenet_data_partition()
 
             # coord-transform ??? -> (x, y)
             # takes [N, 2] points
             coord_transform = lambda v : np.stack([v[:, 1], 400 - v[:, 0]], axis=1)
 
-        self.is_train = is_train
+        elif self.config.DATASET == 'sentinel2':
+            self.IMAGE_SIZE = 1024
+            self.SAMPLE_MARGIN = 64
+            base_dir = './sentinel2/sentinel2_test_1024'
+            rgb_pattern = os.path.join(base_dir, 'images_1024/{}.png')
+            keypoint_mask_pattern = os.path.join(base_dir, 'keypoint_masks/{}.png')
+            road_mask_pattern = os.path.join(base_dir, 'clean_masks/{}.png')
+            gt_graph_pattern = os.path.join(base_dir, 'graphs_p/{}.p')
+            train, val, test = sentinel2_data_partition()
+            coord_transform = lambda v : v[:, ::-1]
 
-        train_split = train + val
-        test_split = test
+        self.is_train = (split == 'train')
 
-        tile_indices = train_split if self.is_train else test_split
-        self.tile_indices = tile_indices
-        
-        # Stores all imgs in memory.
-        self.rgbs, self.keypoint_masks, self.road_masks = [], [], []
-        # For graph label generation.
-        self.graph_label_generators = []
+        if split == 'train':
+            tile_indices = train
+        elif split == 'val':
+            tile_indices = val
+        elif split == 'test':
+            tile_indices = test
+        else:
+            raise ValueError("Split must be 'train', 'val', or 'test'")
+
+        print(f"Loaded {split} split. Number of tiles: {len(tile_indices)}")
 
         ##### FAST DEBUG
         if dev_run:
             tile_indices = tile_indices[:4]
         ##### FAST DEBUG
 
+        # --- MODIFIED FOR LAZY LOADING ---
+        self.valid_tile_indices = []
+        self.rgb_paths = []
+        self.keypoint_mask_paths = []
+        self.road_mask_paths = []
+        self.graph_label_generators = []
+
         for tile_idx in tile_indices:
-            print(f'loading tile {tile_idx}')
-            rgb_path = rgb_pattern.format(tile_idx)
-            road_mask_path = road_mask_pattern.format(tile_idx)
-            keypoint_mask_path = keypoint_mask_pattern.format(tile_idx)
+            # print(f'loading tile {tile_idx}')
+            # rgb_path = rgb_pattern.format(tile_idx)
+            # road_mask_path = road_mask_pattern.format(tile_idx)
+            # keypoint_mask_path = keypoint_mask_pattern.format(tile_idx)
 
             # graph label gen
             # gt graph: dict for adj list, for cityscale set keys are (r, c) nodes, values are list of (r, c) nodes
@@ -371,20 +404,27 @@ class SatMapDataset(Dataset):
                 print(f'===== skipped empty tile {tile_idx} =====')
                 continue
 
-            self.rgbs.append(read_rgb_img(rgb_path))
-            self.road_masks.append(cv2.imread(road_mask_path, cv2.IMREAD_GRAYSCALE))
-            self.keypoint_masks.append(cv2.imread(keypoint_mask_path, cv2.IMREAD_GRAYSCALE))
+            # self.rgbs.append(read_rgb_img(rgb_path))
+            # self.road_masks.append(cv2.imread(road_mask_path, cv2.IMREAD_GRAYSCALE))
+            # self.keypoint_masks.append(cv2.imread(keypoint_mask_path, cv2.IMREAD_GRAYSCALE))
+
+            # Append the paths instead of the actual arrays
+            self.valid_tile_indices.append(tile_idx)
+            self.rgb_paths.append(rgb_pattern.format(tile_idx))
+            self.road_mask_paths.append(road_mask_pattern.format(tile_idx))
+            self.keypoint_mask_paths.append(keypoint_mask_pattern.format(tile_idx))
+
+            # Still generate the graph label generator in RAM
             graph_label_generator = GraphLabelGenerator(config, gt_graph_adj, coord_transform)
             self.graph_label_generators.append(graph_label_generator)
-            
-        
+
         self.sample_min = self.SAMPLE_MARGIN
         self.sample_max = self.IMAGE_SIZE - (self.config.PATCH_SIZE + self.SAMPLE_MARGIN)
 
         if not self.is_train:
             eval_patches_per_edge = math.ceil((self.IMAGE_SIZE - 2 * self.SAMPLE_MARGIN) / self.config.PATCH_SIZE)
             self.eval_patches = []
-            for i in range(len(tile_indices)):
+            for i in range(len(self.valid_tile_indices)):   # to only load valid tiles - since we have empty road labels
                 self.eval_patches += get_patch_info_one_img(
                     i, self.IMAGE_SIZE, self.SAMPLE_MARGIN, self.config.PATCH_SIZE, eval_patches_per_edge
                 )
@@ -396,24 +436,32 @@ class SatMapDataset(Dataset):
                 return max(1, int(self.IMAGE_SIZE / self.config.PATCH_SIZE)) ** 2 * 2500
             elif self.config.DATASET == 'spacenet':
                 return 84667
+            elif self.config.DATASET == 'sentinel2':
+                return len(self.valid_tile_indices) * 4
         else:
             return len(self.eval_patches)
 
     def __getitem__(self, idx):
         # Sample a patch.
         if self.is_train:
-            img_idx = np.random.randint(low=0, high=len(self.rgbs))
+            img_idx = np.random.randint(low=0, high=len(self.valid_tile_indices))
             begin_x = np.random.randint(low=self.sample_min, high=self.sample_max+1)
             begin_y = np.random.randint(low=self.sample_min, high=self.sample_max+1)
             end_x, end_y = begin_x + self.config.PATCH_SIZE, begin_y + self.config.PATCH_SIZE
         else:
             # Returns eval patch
             img_idx, (begin_x, begin_y), (end_x, end_y) = self.eval_patches[idx]
-        
+
+        # --- MODIFIED FOR LAZY LOADING ---
+        # Load from disk here
+        rgb = read_rgb_img(self.rgb_paths[img_idx])
+        keypoint_mask = cv2.imread(self.keypoint_mask_paths[img_idx], cv2.IMREAD_GRAYSCALE)
+        road_mask = cv2.imread(self.road_mask_paths[img_idx], cv2.IMREAD_GRAYSCALE)
+
         # Crop patch imgs and masks
-        rgb_patch = self.rgbs[img_idx][begin_y:end_y, begin_x:end_x, :]
-        keypoint_mask_patch = self.keypoint_masks[img_idx][begin_y:end_y, begin_x:end_x]
-        road_mask_patch = self.road_masks[img_idx][begin_y:end_y, begin_x:end_x]
+        rgb_patch = rgb[begin_y:end_y, begin_x:end_x, :]
+        keypoint_mask_patch = keypoint_mask[begin_y:end_y, begin_x:end_x]
+        road_mask_patch = road_mask[begin_y:end_y, begin_x:end_x]
 
         # Augmentation
         rot_index = 0
@@ -423,21 +471,21 @@ class SatMapDataset(Dataset):
             rgb_patch = np.rot90(rgb_patch, rot_index, [0,1]).copy()
             keypoint_mask_patch = np.rot90(keypoint_mask_patch, rot_index, [0, 1]).copy()
             road_mask_patch = np.rot90(road_mask_patch, rot_index, [0, 1]).copy()
-        
+
         # Sample graph labels from patch
         patch = ((begin_x, begin_y), (end_x, end_y))
         # points are img (x, y) inside the patch.
         graph_points, topo_samples = self.graph_label_generators[img_idx].sample_patch(patch, rot_index)
-        
+
         pairs, connected, valid = zip(*topo_samples)
-        
+
         # rgb: [H, W, 3] 0-255
         # masks: [H, W] 0-1
+
         return {
             'rgb': torch.tensor(rgb_patch, dtype=torch.float32),
             'keypoint_mask': torch.tensor(keypoint_mask_patch, dtype=torch.float32) / 255.0,
             'road_mask': torch.tensor(road_mask_patch, dtype=torch.float32) / 255.0,
-            
             'graph_points': torch.tensor(graph_points, dtype=torch.float32),
             'pairs': torch.tensor(pairs, dtype=torch.int32),
             'connected': torch.tensor(connected, dtype=torch.bool),

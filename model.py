@@ -22,7 +22,7 @@ import pprint
 import torchvision
 
 # Only needed for the ablation experiment of using a ViT-B model without SA-1B pre-training.
-# It depends on detectron2 library. Not super important. 
+# It depends on detectron2 library. Not super important.
 # import vitdet
 
 
@@ -45,18 +45,18 @@ class BilinearSampler(nn.Module):
 
         # normalize cooridinates to (-1, 1) for grid_sample
         sample_points = (sample_points / self.config.PATCH_SIZE) * 2.0 - 1.0
-        
+
         # sample_points from [B, N_points, 2] to [B, N_points, 1, 2] for grid_sample
         sample_points = sample_points.unsqueeze(2)
-        
+
         # Use grid_sample for bilinear sampling. Align_corners set to False to use -1 to 1 grid space.
         # [B, D, N_points, 1]
         sampled_features = F.grid_sample(feature_maps, sample_points, mode='bilinear', align_corners=False)
-        
+
         # sampled_features is [B, N_points, D]
         sampled_features = sampled_features.squeeze(dim=-1).permute(0, 2, 1)
         return sampled_features
-    
+
 
 class TopoNet(nn.Module):
     def __init__(self, config, feature_dim):
@@ -79,7 +79,7 @@ class TopoNet(nn.Module):
             activation='relu',
             batch_first=True  # Input format is [batch size, sequence length, features]
         )
-        
+
         # Stack the Transformer Encoder Layers
         if self.config.TOPONET_VERSION != 'no_transformer':
             self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=self.num_attn_layers)
@@ -90,12 +90,12 @@ class TopoNet(nn.Module):
         # point_features: [B, N_points, D]
         # pairs: [B, N_samples, N_pairs, 2]
         # pairs_valid: [B, N_samples, N_pairs]
-        
+
         point_features = F.relu(self.feature_proj(point_features))
         # gathers pairs
         batch_size, n_samples, n_pairs, _ = pairs.shape
         pairs = pairs.view(batch_size, -1, 2)
-        
+
         batch_indices = torch.arange(batch_size).view(-1, 1).expand(-1, n_samples * n_pairs)
         # Use advanced indexing to fetch the corresponding feature vectors
         # [B, N_samples * N_pairs, D]
@@ -114,11 +114,11 @@ class TopoNet(nn.Module):
             pair_features = torch.concat([src_features, tgt_features, torch.zeros_like(offset)], dim=2)
         else:
             pair_features = torch.concat([src_features, tgt_features, offset], dim=2)
-        
-        
+
+
         # [B, N_samples * N_pairs, D]
         pair_features = F.relu(self.pair_proj(pair_features))
-        
+
         # attn applies within each local graph sample
         pair_features = pair_features.view(batch_size * n_samples, n_pairs, -1)
         # valid->not a padding
@@ -130,11 +130,11 @@ class TopoNet(nn.Module):
         pairs_valid = torch.logical_or(pairs_valid, all_invalid_pair_mask)
 
         padding_mask = ~pairs_valid
-        
+
         ## ablation study
         if self.config.TOPONET_VERSION != 'no_transformer':
             pair_features = self.transformer_encoder(pair_features, src_key_padding_mask=padding_mask)
-        
+
         ## Seems like at inference time, the returned n_pairs heres might be less - it's the
         # max num of valid pairs across all samples in the batch
         _, n_pairs, _ = pair_features.shape
@@ -216,7 +216,7 @@ class SAMRoad(pl.LightningModule):
             encoder_num_heads=16
             encoder_global_attn_indexes=[7, 15, 23, 31]
             ###
-            
+
         prompt_embed_dim = 256
         # SAM default is 1024
         image_size = config.PATCH_SIZE
@@ -231,7 +231,7 @@ class SAMRoad(pl.LightningModule):
 
         if self.config.NO_SAM:
             # Only needed for the ablation experiment of using a ViT-B model without SA-1B pre-training.
-            # It depends on detectron2 library. Not super important. 
+            # It depends on detectron2 library. Not super important.
             ### im1k + mae pre-trained vitb
             # self.image_encoder = vitdet.VITBEncoder(image_size=image_size, output_feature_dim=prompt_embed_dim)
             # self.matched_param_names = self.image_encoder.matched_param_names
@@ -294,7 +294,7 @@ class SAMRoad(pl.LightningModule):
                 nn.ConvTranspose2d(32, 2, kernel_size=2, stride=2),
             )
 
-        
+
         #### TOPONet
         self.bilinear_sampler = BilinearSampler(config)
         self.topo_net = TopoNet(config, encoder_output_dim)
@@ -371,7 +371,7 @@ class SAMRoad(pl.LightningModule):
             if image_size != 1024:
                 new_state_dict = self.resize_sam_pos_embed(ckpt_state_dict, image_size, vit_patch_size, encoder_global_attn_indexes)
                 ckpt_state_dict = new_state_dict
-            
+
             matched_names = []
             mismatch_names = []
             state_dict_to_load = {}
@@ -410,7 +410,7 @@ class SAMRoad(pl.LightningModule):
                 new_state_dict[k] = rel_pos_params[0, 0, ...]
         return new_state_dict
 
-    
+
     def forward(self, rgb, graph_points, pairs, valid):
         # rgb: [B, H, W, C]
         # graph_points: [B, N_points, 2]
@@ -444,18 +444,18 @@ class SAMRoad(pl.LightningModule):
         else:
             mask_logits = self.map_decoder(image_embeddings)
             mask_scores = torch.sigmoid(mask_logits)
-        
+
         ## Predicts local topology
         point_features = self.bilinear_sampler(image_embeddings, graph_points)
         # [B, N_sample, N_pair, 1]
         topo_logits, topo_scores = self.topo_net(graph_points, point_features, pairs, valid)
-        
-        
+
+
         # [B, H, W, 2]
         mask_logits = mask_logits.permute(0, 2, 3, 1)
         mask_scores = mask_scores.permute(0, 2, 3, 1)
         return mask_logits, mask_scores, topo_logits, topo_scores
-    
+
     def infer_masks_and_img_features(self, rgb):
         # rgb: [B, H, W, C]
         # graph_points: [B, N_points, 2]
@@ -489,11 +489,11 @@ class SAMRoad(pl.LightningModule):
         else:
             mask_logits = self.map_decoder(image_embeddings)
             mask_scores = torch.sigmoid(mask_logits)
-        
+
         # [B, H, W, 2]
         mask_scores = mask_scores.permute(0, 2, 3, 1)
         return mask_scores, image_embeddings
-    
+
 
     def infer_toponet(self, image_embeddings, graph_points, pairs, valid):
         # image_embeddings: [B, D, h, w]
@@ -535,7 +535,7 @@ class SAMRoad(pl.LightningModule):
 
         topo_loss *= topo_loss_mask.unsqueeze(-1)
         # topo_loss = torch.nansum(torch.nansum(topo_loss) / topo_loss_mask.sum())
-        topo_loss = topo_loss.sum() / topo_loss_mask.sum()
+        topo_loss = topo_loss.sum() / (topo_loss_mask.sum() + 1e-6) # add eps to prevent div by zero
 
         loss = mask_loss + topo_loss
         self.log('train_mask_loss', mask_loss, on_step=True, on_epoch=False, prog_bar=True)
@@ -561,7 +561,7 @@ class SAMRoad(pl.LightningModule):
         # [B, N_samples, N_pairs, 1]
         topo_loss = self.topo_criterion(topo_logits, topo_gt.unsqueeze(-1).to(torch.float32))
         topo_loss *= topo_loss_mask.unsqueeze(-1)
-        topo_loss = topo_loss.sum() / topo_loss_mask.sum()
+        topo_loss = topo_loss.sum() / (topo_loss_mask.sum() + 1e-6) # add eps to prevent div by zero
         loss = mask_loss + topo_loss
         self.log('val_mask_loss', mask_loss, on_step=False, on_epoch=True, prog_bar=True)
         self.log('val_topo_loss', topo_loss, on_step=False, on_epoch=True, prog_bar=True)
@@ -575,18 +575,18 @@ class SAMRoad(pl.LightningModule):
             viz_pred_road = mask_scores[:max_viz_num, :, :, 1]
             viz_gt_keypoint = keypoint_mask[:max_viz_num, ...]
             viz_gt_road = road_mask[:max_viz_num, ...]
-            
+
             columns = ['rgb', 'gt_keypoint', 'gt_road', 'pred_keypoint', 'pred_road']
             data = [[wandb.Image(x.cpu().numpy()) for x in row] for row in list(zip(viz_rgb, viz_gt_keypoint, viz_gt_road, viz_pred_keypoint, viz_pred_road))]
             self.logger.log_table(key='viz_table', columns=columns, data=data)
 
         self.keypoint_iou.update(mask_scores[..., 0], keypoint_mask)
         self.road_iou.update(mask_scores[..., 1], road_mask)
-        
+
         valid = valid.to(torch.int32)
         topo_gt = (1 - valid) * -1 + valid * topo_gt
         self.topo_f1.update(topo_scores, topo_gt.unsqueeze(-1))
-        
+
 
     def on_validation_epoch_end(self):
         keypoint_iou = self.keypoint_iou.compute()
@@ -611,14 +611,14 @@ class SAMRoad(pl.LightningModule):
 
         self.keypoint_pr_curve.update(mask_scores[..., 0], keypoint_mask.to(torch.int32))
         self.road_pr_curve.update(mask_scores[..., 1], road_mask.to(torch.int32))
-        
+
         valid = valid.to(torch.int32)
         topo_gt = (1 - valid) * -1 + valid * topo_gt
         self.topo_pr_curve.update(topo_scores, topo_gt.unsqueeze(-1).to(torch.int32))
 
     def on_test_end(self):
         def find_best_threshold(pr_curve_metric, category):
-            print(f'======= {category} ======')   
+            print(f'======= {category} ======')
             precision, recall, thresholds = pr_curve_metric.compute()
             f1_scores = 2 * (precision * recall) / (precision + recall)
             best_threshold_index = torch.argmax(f1_scores)
@@ -627,7 +627,7 @@ class SAMRoad(pl.LightningModule):
             best_recall = recall[best_threshold_index]
             best_f1 = f1_scores[best_threshold_index]
             print(f'Best threshold {best_threshold}, P={best_precision} R={best_recall} F1={best_f1}')
-        
+
         print('======= Finding best thresholds ======')
         find_best_threshold(self.keypoint_pr_curve, 'keypoint')
         find_best_threshold(self.road_pr_curve, 'road')
@@ -650,7 +650,7 @@ class SAMRoad(pl.LightningModule):
                 'lr': self.config.BASE_LR,
             }
             param_dicts.append(encoder_params)
-        
+
         if self.config.USE_SAM_DECODER:
             matched_decoder_params = {
                 'params': [p for k, p in self.mask_decoder.named_parameters() if 'mask_decoder.'+k in self.matched_param_names],
@@ -673,7 +673,7 @@ class SAMRoad(pl.LightningModule):
             'lr': self.config.BASE_LR
         }]
         param_dicts += topo_net_params
-        
+
         for i, param_dict in enumerate(param_dicts):
             param_num = sum([int(p.numel()) for p in param_dict['params']])
             print(f'optim param dict {i} params num: {param_num}')
@@ -683,4 +683,3 @@ class SAMRoad(pl.LightningModule):
         # warmup = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.1, end_factor=1.0, total_iters=10)
         step_lr = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[9,], gamma=0.1)
         return {'optimizer': optimizer, 'lr_scheduler': step_lr}
-
