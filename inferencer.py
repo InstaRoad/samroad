@@ -73,20 +73,36 @@ def draw_graph_on_bgr_image(bgr_img, nodes_rc, edges, line_thickness=4, node_rad
 
 
 def make_comparison_grid(orig_rgb, gt_mask, pred_nodes, pred_edges, road_mask):
+    # Scale all viz params to the tile size: defaults were tuned for ~1024px
+    # tiles and overflow/overdraw on 256px S2-ROSA tiles.
+    h, w = orig_rgb.shape[:2]
+    s = w / 512.0
+    line_thickness = max(1, round(4 * s))
+    node_radius = max(1, round(4 * s))
+
     orig_bgr = cv2.cvtColor(orig_rgb, cv2.COLOR_RGB2BGR)
     gt_mask_bgr = cv2.cvtColor(gt_mask, cv2.COLOR_GRAY2BGR)
     pred_mask_bgr = cv2.cvtColor(road_mask, cv2.COLOR_GRAY2BGR)
-    viz_img = draw_graph_on_bgr_image(orig_bgr, pred_nodes, pred_edges)
+    viz_img = draw_graph_on_bgr_image(orig_bgr, pred_nodes, pred_edges, line_thickness, node_radius)
 
     font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = 1.0
-    thickness = 2
     color = (0, 255, 0)
 
-    cv2.putText(orig_bgr, "Original Image", (20, 40), font, font_scale, color, thickness)
-    cv2.putText(gt_mask_bgr, "Ground Truth Mask", (20, 40), font, font_scale, color, thickness)
-    cv2.putText(viz_img, "Predicted Graph", (20, 40), font, font_scale, color, thickness)
-    cv2.putText(pred_mask_bgr, "Predicted Binary Mask", (20, 40), font, font_scale, color, thickness)
+    def label(img, text):
+        # pick the largest font_scale whose text fits within ~92% of the tile width
+        target_w = 0.92 * w
+        font_scale = max(0.35, s)
+        (tw, th), _ = cv2.getTextSize(text, font, font_scale, 1)
+        if tw > target_w:
+            font_scale *= target_w / tw
+        thickness = max(1, round(font_scale * 2))
+        org = (max(4, round(0.03 * w)), round(th + 0.04 * h) + 4)
+        cv2.putText(img, text, org, font, font_scale, color, thickness, cv2.LINE_AA)
+
+    label(orig_bgr, "Original Image")
+    label(gt_mask_bgr, "Ground Truth Mask")
+    label(viz_img, "Predicted Graph")
+    label(pred_mask_bgr, "Predicted Binary Mask")
 
     top_row = np.concatenate((orig_bgr, gt_mask_bgr), axis=1)
     bottom_row = np.concatenate((viz_img, pred_mask_bgr), axis=1)
