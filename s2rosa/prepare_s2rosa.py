@@ -50,6 +50,12 @@ DRIVABLE_CLASSES = {
     "motorway", "trunk", "primary", "secondary", "tertiary",
     "residential", "unclassified", "living_street",
 }
+# For the TerraMind variant (--with-bands): the 10 Sentinel-2 L2A bands present in
+# S2-ROSA, in TerraMind's S2L2A order. Values are the S2-ROSA COG band indices (1-based).
+# COG band order is B4,B3,B2,B8,B5,B6,B7,B8A,B11,B12,... so:
+S2L2A_NAMES = ["BLUE", "GREEN", "RED", "RED_EDGE_1", "RED_EDGE_2", "RED_EDGE_3",
+               "NIR_BROAD", "NIR_NARROW", "SWIR_1", "SWIR_2"]
+S2L2A_COG_BANDS = [3, 2, 1, 5, 6, 7, 4, 8, 9, 10]
 KEYPOINT_RADIUS = 3  # matches sam_road/cityscale/generate_labels.py
 STRETCH_LO, STRETCH_HI = 2, 98  # per-image percentile stretch for the 8-bit RGB
 SIMPLIFY_TOL_PX = 1.0  # drop sub-pixel Overture curve vertices (10 m/px) before snapping
@@ -163,12 +169,20 @@ def main():
     ap.add_argument("--limit", type=int, default=0, help="max patches per zone (0 = no limit)")
     ap.add_argument("--classes", default=None,
                     help="comma-separated Overture road classes to keep (default: drivable set)")
+    ap.add_argument("--with-bands", action="store_true",
+                    help="also emit bands/<id>.npy (10 S2L2A bands, float16) for the TerraMind variant")
     args = ap.parse_args()
     keep_classes = set(args.classes.split(",")) if args.classes else DRIVABLE_CLASSES
 
     src, out = args.src, args.out
-    for sub in ("images", "road_masks", "keypoint_masks", "graphs_p"):
+    subdirs = ["images", "road_masks", "keypoint_masks", "graphs_p"]
+    if args.with_bands:
+        subdirs.append("bands")
+    for sub in subdirs:
         os.makedirs(os.path.join(out, sub), exist_ok=True)
+    if args.with_bands:
+        with open(os.path.join(out, "bands", "band_order.json"), "w") as f:
+            json.dump({"bands": S2L2A_NAMES, "modality": "S2L2A", "scale": "reflectance ~[0,1]"}, f, indent=2)
 
     meta = pd.read_parquet(os.path.join(src, "metadata.parquet"))
     zones = args.zones.split(",") if args.zones else sorted(meta["zone_name"].unique())
@@ -225,6 +239,11 @@ def main():
                 cv2.imwrite(os.path.join(out, "road_masks", f"{tile_id}.png"), road)
 
                 cv2.imwrite(os.path.join(out, "keypoint_masks", f"{tile_id}.png"), draw_keypoints(adj))
+
+                if args.with_bands:
+                    stack = img_src.read(S2L2A_COG_BANDS, window=win).astype(np.float32)
+                    stack = np.nan_to_num(stack, nan=0.0, posinf=0.0, neginf=0.0)
+                    np.save(os.path.join(out, "bands", f"{tile_id}.npy"), stack.astype(np.float16))
 
                 with open(os.path.join(out, "graphs_p", f"{tile_id}.p"), "wb") as f:
                     pickle.dump(adj, f)
