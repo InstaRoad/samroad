@@ -85,10 +85,11 @@ if __name__ == "__main__":
 
     # checkpoint_callback = ModelCheckpoint(every_n_epochs=1, save_top_k=-1) # this saves a checkpoint every epoch, fills disk fast because each epoch is around 1GB
 
-    # Keep the 3 models with the lowest val_loss
+    # Keep the 3 models with the highest road_iou (the task metric; val_loss can rise
+    # via miscalibration while road quality still holds/improves)
     checkpoint_callback = ModelCheckpoint(
-        monitor="val_loss",
-        mode="min",          
+        monitor="road_iou",
+        mode="max",
         save_top_k=3,
         every_n_epochs=1
     )
