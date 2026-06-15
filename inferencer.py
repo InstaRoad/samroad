@@ -6,7 +6,7 @@ import cv2
 
 from utils import load_config, create_output_dir_and_save_config
 from dataset import cityscale_data_partition, read_rgb_img, get_patch_info_one_img
-from dataset import spacenet_data_partition, sentinel2_data_partition
+from dataset import spacenet_data_partition, sentinel2_data_partition, s2rosa_data_partition
 from model import SAMRoad
 import graph_extraction
 import graph_utils
@@ -307,6 +307,13 @@ if __name__ == "__main__":
 
         test_img_indices = test_img_indices[:100]
         print(f'Running inference on first {len(test_img_indices)} test images')
+    elif config.DATASET == 's2rosa':
+        _, _, test_img_indices = s2rosa_data_partition()
+        base_dir = './s2rosa_data'
+        rgb_pattern = os.path.join(base_dir, 'images/{}.png')
+        gt_graph_pattern = os.path.join(base_dir, 'graphs_p/{}.p')
+        gt_mask_pattern = os.path.join(base_dir, 'road_masks/{}.png')
+        print(f'Running inference on {len(test_img_indices)} test images')
 
     output_dir_prefix = './save/infer_'
     if args.output_dir:
@@ -341,8 +348,8 @@ if __name__ == "__main__":
             gt_nodes = np.stack([gt_nodes[:, 1], 400 - gt_nodes[:, 0]], axis=1)
             gt_nodes = gt_nodes[:, ::-1]
 
-        # only for sentinel2 which has gt masks, for cityscale/spacenet we can only compare with gt graph
-        if config.DATASET == 'sentinel2':
+        # only for sentinel2 / s2rosa which have gt masks, for cityscale/spacenet we can only compare with gt graph
+        if config.DATASET in ('sentinel2', 's2rosa'):
             gt_mask_path = gt_mask_pattern.format(img_id)
             if os.path.exists(gt_mask_path):
                 gt_mask = cv2.imread(gt_mask_path, cv2.IMREAD_GRAYSCALE)
@@ -392,8 +399,8 @@ if __name__ == "__main__":
         viz_img = triage.visualize_image_and_graph(viz_img, pred_nodes / img_size, pred_edges, viz_img.shape[0])
         cv2.imwrite(os.path.join(viz_save_dir, f'{img_id}.png'), viz_img)
 
-        # gt_mask is only defined in sentinel 2 dataset if statement
-        if config.DATASET == 'sentinel2':
+        # gt_mask is only defined in sentinel2 / s2rosa dataset if statement
+        if config.DATASET in ('sentinel2', 's2rosa'):
             comparison_grid = make_comparison_grid(
                 img,
                 gt_mask,

@@ -1,4 +1,5 @@
 from argparse import ArgumentParser
+import os
 import numpy as np
 import torch
 import torch.nn as nn
@@ -49,8 +50,8 @@ if __name__ == "__main__":
         project="sam_road_s2",
         # track hyperparameters and run metadata
         config=config,
-        # disable wandb if debugging
-        mode='disabled' if dev_run else None
+        # disable wandb if debugging or when WANDB_DISABLED is set (e.g. on Kaggle)
+        mode='disabled' if (dev_run or os.environ.get('WANDB_DISABLED')) else None
     )
 
 
