@@ -81,6 +81,18 @@ def s2rosa_data_partition():
     return data_list['train'], data_list['validation'], data_list['test']
 
 
+def s2roads_data_partition():
+    json_path = './s2roads_data/data_split.json'
+
+    if not os.path.exists(json_path):
+        raise FileNotFoundError(f"Cannot find {json_path}. Did you run s2roads/prepare_s2roads.py first?")
+
+    with open(json_path, 'r') as jf:
+        data_list = json.load(jf)
+
+    return data_list['train'], data_list['validation'], data_list['test']
+
+
 def get_patch_info_one_img(image_index, image_size, sample_margin, patch_size, patches_per_edge):
     patch_info = []
     sample_min = sample_margin
@@ -335,7 +347,7 @@ class SatMapDataset(Dataset):
     def __init__(self, config, split='train', dev_run=False):
         self.config = config
 
-        assert self.config.DATASET in {'cityscale', 'spacenet', 'sentinel2', 's2rosa'}
+        assert self.config.DATASET in {'cityscale', 'spacenet', 'sentinel2', 's2rosa', 's2roads'}
         if self.config.DATASET == 'cityscale':
             self.IMAGE_SIZE = 2048
             # TODO: SAMPLE_MARGIN here is for training, the one in config is for inference
@@ -389,6 +401,20 @@ class SatMapDataset(Dataset):
             road_mask_pattern = os.path.join(base_dir, 'road_masks/{}.png')
             gt_graph_pattern = os.path.join(base_dir, 'graphs_p/{}.p')
             train, val, test = s2rosa_data_partition()
+            # graph nodes are (row, col); convert to (x=col, y=row)
+            coord_transform = lambda v : v[:, ::-1]
+
+        elif self.config.DATASET == 's2roads':
+            # Kaggle Sentinel-2 Roads: each 256x256 tile is one SAM-Road tile,
+            # graphs recovered from the raster masks by s2roads/prepare_s2roads.py.
+            self.IMAGE_SIZE = 256
+            self.SAMPLE_MARGIN = 0
+            base_dir = './s2roads_data'  # dataset dir; converter lives in ./s2roads
+            rgb_pattern = os.path.join(base_dir, 'images/{}.png')
+            keypoint_mask_pattern = os.path.join(base_dir, 'keypoint_masks/{}.png')
+            road_mask_pattern = os.path.join(base_dir, 'road_masks/{}.png')
+            gt_graph_pattern = os.path.join(base_dir, 'graphs_p/{}.p')
+            train, val, test = s2roads_data_partition()
             # graph nodes are (row, col); convert to (x=col, y=row)
             coord_transform = lambda v : v[:, ::-1]
 
@@ -466,6 +492,9 @@ class SatMapDataset(Dataset):
             elif self.config.DATASET == 'sentinel2':
                 return len(self.valid_tile_indices) * 4
             elif self.config.DATASET == 's2rosa':
+                # one fixed 256-patch per tile; x4 to amortise rotation augmentation
+                return len(self.valid_tile_indices) * 4
+            elif self.config.DATASET == 's2roads':
                 # one fixed 256-patch per tile; x4 to amortise rotation augmentation
                 return len(self.valid_tile_indices) * 4
         else:
