@@ -18,7 +18,9 @@ whole tile), exactly like the s2rosa branch.
 
 For every non-empty tile we emit:
     <out>/images/<id>.png          the chosen RGB (images_png or images_enhanced_png), copied verbatim
-    <out>/road_masks/<id>.png      0/255 road mask (from masks_png)
+    <out>/road_masks/<id>.png      0/255 road mask, dilated by --road_buffer px (the raw
+                                   masks_png roads are ~1 px wide, too thin a segmentation
+                                   target; the graph/keypoints still come from the thin mask)
     <out>/keypoint_masks/<id>.png  0/255 disks at graph nodes with degree != 2
     <out>/graphs_p/<id>.p          pickled adjacency dict {(row,col): [(row,col), ...]}
     <out>/data_split.json          {"train": [...], "validation": [...], "test": [...]}
@@ -53,6 +55,8 @@ KEYPOINT_RADIUS = 3      # matches sam_road/cityscale/generate_labels.py
 SIMPLIFY_TOL_PX = 2.0    # approxPolyDP tolerance: drop near-collinear skeleton vertices
 MIN_SPUR_PX = 8.0        # prune skeleton dead-end branches shorter than this (skeleton noise)
 BORDER = 2               # nodes within BORDER px of the edge are cut roads, not real keypoints
+ROAD_BUFFER_PX = 2       # dilate the thin raster road mask by this radius for the seg target
+                         # (~10 m/px Sentinel-2: radius 2 -> ~5 px / ~50 m band)
 
 
 def find_leaf_dir(root, name):
@@ -115,6 +119,17 @@ def mask_to_adjacency(mask, simplify_tol, min_spur):
     return {k: list(v) for k, v in adj.items()}
 
 
+def buffer_mask(mask, radius):
+    """Thin binary road mask -> wider 0/255 band via morphological dilation (the
+    segmentation training target). radius px; a circular (elliptical) structuring
+    element approximates a buffer of that radius. radius 0 -> verbatim thin mask."""
+    binary = (mask > 0).astype(np.uint8)
+    if radius > 0:
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1))
+        binary = cv2.dilate(binary, k)
+    return binary * 255
+
+
 def draw_keypoints(adj, radius):
     """Disks at graph nodes with degree != 2 (intersections + dead-ends), excluding
     the patch border. Returns [PATCH, PATCH] uint8 0/255."""
@@ -142,6 +157,8 @@ def main():
     ap.add_argument("--simplify", type=float, default=SIMPLIFY_TOL_PX, help="polyline simplify tolerance (px)")
     ap.add_argument("--min_spur", type=float, default=MIN_SPUR_PX, help="prune dead-end branches shorter than this (px); 0=off")
     ap.add_argument("--keypoint_radius", type=int, default=KEYPOINT_RADIUS)
+    ap.add_argument("--road_buffer", type=int, default=ROAD_BUFFER_PX,
+                    help="dilate the road mask by this radius (px) for the seg target; 0 = thin/verbatim")
     ap.add_argument("--limit", type=int, default=0, help="max tiles processed (0 = no limit), for quick tests")
     args = ap.parse_args()
 
@@ -194,8 +211,8 @@ def main():
         else:
             cv2.imwrite(dst_img, cv2.resize(img, (PATCH, PATCH)))
 
-        # road mask: force 0/255
-        road = (mask > 0).astype(np.uint8) * 255
+        # road mask: dilate the thin raster mask into a wider seg target (0/255)
+        road = buffer_mask(mask, args.road_buffer)
         cv2.imwrite(os.path.join(args.out, "road_masks", f"{tid}.png"), road)
 
         cv2.imwrite(os.path.join(args.out, "keypoint_masks", f"{tid}.png"),

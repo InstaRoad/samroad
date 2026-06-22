@@ -28,7 +28,11 @@ download root and it copes with the wrapper + doubling.
 
 - **Image**: copies the chosen RGB variant verbatim (`--images images_png` or
   `images_enhanced_png`). Already 256×256 8-bit, no re-encode.
-- **Road mask**: `masks_png`, forced to 0/255.
+- **Road mask** (seg target): `masks_png` **dilated by `--road_buffer` px** (default 2,
+  ≈ 5 px / 50 m band). The raw masks are ~1 px wide — too thin a segmentation target
+  (severe class imbalance, thin-structure loss). The buffer only widens the training
+  target; the **graph and keypoints are still traced from the original thin mask** so
+  the centreline stays accurate. `--road_buffer 0` keeps the verbatim thin mask.
 - **Graph**: `skeletonize` (scikit-image) → trace to a node/edge graph (`sknw`) →
   prune short dead-end spurs (skeleton noise) → chain each simplified edge polyline
   into consecutive integer-pixel edges. Result is the sat2graph adjacency dict
@@ -43,13 +47,14 @@ Output (this is the SAM-Road dataset):
 
 ```
 <out>/images/<id>.png          chosen RGB, 256×256 8-bit
-<out>/road_masks/<id>.png      0/255
+<out>/road_masks/<id>.png      0/255, dilated by --road_buffer px
 <out>/keypoint_masks/<id>.png  0/255 disks at intersections/endpoints
 <out>/graphs_p/<id>.p          pickled adjacency dict {(row,col): [(row,col),…]}
 <out>/data_split.json          {"train": [...], "validation": [...], "test": [...]}
 ```
 
-Useful flags: `--limit N` (cap tiles, quick test), `--min_spur PX` (dead-end pruning
+Useful flags: `--limit N` (cap tiles, quick test), `--road_buffer PX` (road-mask
+dilation radius, default 2; `0` = thin/verbatim), `--min_spur PX` (dead-end pruning
 length, default 8; `0` = off), `--simplify PX` (polyline tolerance, default 2),
 `--keypoint_radius PX` (default 3).
 
