@@ -51,7 +51,8 @@ import sknw
 from skimage.morphology import skeletonize
 
 PATCH = 256              # tile size == SAM-Road PATCH_SIZE
-KEYPOINT_RADIUS = 3      # matches sam_road/cityscale/generate_labels.py
+KEYPOINT_RADIUS = 5      # cityscale uses 3 @2048px; intersections are far sparser on these
+                         # 256px Sentinel-2 tiles, so use a bigger disk for a learnable target
 SIMPLIFY_TOL_PX = 2.0    # approxPolyDP tolerance: drop near-collinear skeleton vertices
 MIN_SPUR_PX = 8.0        # prune skeleton dead-end branches shorter than this (skeleton noise)
 BORDER = 2               # nodes within BORDER px of the edge are cut roads, not real keypoints

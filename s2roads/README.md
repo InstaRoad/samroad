@@ -92,6 +92,31 @@ The loader expects the dataset at `./s2roads_data` (relative to `sam_road/`) and
 SAM checkpoint at `SAM_CKPT_PATH`. `sknw` + `scikit-image` (converter only) are in the
 `samroad` optional-dependency set.
 
+### Keypoint head collapsing to 0?
+
+The keypoint (intersection) channel is extremely sparse on this dataset: disks at
+degree≠2 nodes are ~0.1% of pixels (median), and ~30% of tiles have **no** interior
+intersection at all (just through-roads). `model.py` puts the keypoint and road
+channels through one **unweighted** `BCEWithLogitsLoss`, so with `FOCAL_LOSS: False`
+the keypoint logits collapse to all-negative (predict 0) — that is near-optimal BCE
+for a 0.1%-positive channel. The road channel is fine because the `--road_buffer`
+dilation made it ~3-4% positive.
+
+Mitigations (the first two are the defaults now):
+1. **`FOCAL_LOSS: True`** in `config/s2roads_256.yaml` — focal (γ=2) down-weights easy
+   negatives so the rare keypoints still drive gradient. Primary fix.
+2. **`--keypoint_radius 5`** (converter default) — bigger disks ≈ 2.4× the positive
+   area vs radius 3; raise to 7 if the head is still weak. Requires re-converting.
+3. Still collapsing? Give the keypoint channel its own positive weight — pass
+   `pos_weight=torch.tensor([w_kp, w_road])` (e.g. `[20., 1.]`) to the
+   `BCEWithLogitsLoss` in `model.py` (the stacked channel is the last dim), or raise
+   focal `alpha` toward 0.5–0.75.
+
+The ~30% no-intersection tiles are genuine (rural through-roads); they correctly
+supervise an all-zero keypoint map and focal keeps them from dominating — don't
+"fix" them by relaxing the border exclusion (that just invents fake keypoints at
+roads cut by the tile edge).
+
 ### Notes
 - `config/s2roads_256.yaml`: `BATCH_SIZE: 16`, `TRAIN_EPOCHS: 30`, `vit_b`. A 16 GB
   T4/P100 fits batch 16 at 256². Drop to 8 on OOM.
