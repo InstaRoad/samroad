@@ -10,7 +10,7 @@ BASE_LR: 0.001
 FREEZE_ENCODER: False
 ENCODER_LR_FACTOR: 0.1
 ENCODER_LORA: False
-FOCAL_LOSS: True   # keypoint channel is ~0.1% positive -> plain BCE collapses it to 0
+FOCAL_LOSS: False
 USE_SAM_DECODER: False
 
 # TOPONET
