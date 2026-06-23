@@ -356,6 +356,8 @@ class SAMRoad(pl.LightningModule):
         #### Metrics
         self.keypoint_iou = BinaryJaccardIndex(threshold=0.5)
         self.road_iou = BinaryJaccardIndex(threshold=0.5)
+        self.keypoint_f1 = F1Score(task='binary', threshold=0.5)
+        self.road_f1 = F1Score(task='binary', threshold=0.5)
         self.topo_f1 = F1Score(task='binary', threshold=0.5, ignore_index=-1)
         # testing only, not used in training
         self.keypoint_pr_curve = BinaryPrecisionRecallCurve(ignore_index=-1)
@@ -582,6 +584,8 @@ class SAMRoad(pl.LightningModule):
 
         self.keypoint_iou.update(mask_scores[..., 0], keypoint_mask)
         self.road_iou.update(mask_scores[..., 1], road_mask)
+        self.keypoint_f1.update(mask_scores[..., 0], keypoint_mask.to(torch.int32))
+        self.road_f1.update(mask_scores[..., 1], road_mask.to(torch.int32))
 
         valid = valid.to(torch.int32)
         topo_gt = (1 - valid) * -1 + valid * topo_gt
@@ -591,12 +595,18 @@ class SAMRoad(pl.LightningModule):
     def on_validation_epoch_end(self):
         keypoint_iou = self.keypoint_iou.compute()
         road_iou = self.road_iou.compute()
+        keypoint_f1 = self.keypoint_f1.compute()
+        road_f1 = self.road_f1.compute()
         topo_f1 = self.topo_f1.compute()
         self.log("keypoint_iou", keypoint_iou)
         self.log("road_iou", road_iou)
+        self.log("keypoint_f1", keypoint_f1)
+        self.log("road_f1", road_f1)
         self.log("topo_f1", topo_f1)
         self.keypoint_iou.reset()
         self.road_iou.reset()
+        self.keypoint_f1.reset()
+        self.road_f1.reset()
         self.topo_f1.reset()
 
     def test_step(self, batch, batch_idx):
