@@ -3,7 +3,7 @@ import torch
 from torch.utils.data import Dataset
 import cv2
 import math
-import graph_utils
+from sam_road import graph_utils
 import rtree
 import scipy
 import pickle

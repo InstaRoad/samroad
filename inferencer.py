@@ -4,13 +4,13 @@ import imageio
 import torch
 import cv2
 
-from utils import load_config, create_output_dir_and_save_config
-from dataset import cityscale_data_partition, read_rgb_img, get_patch_info_one_img
-from dataset import spacenet_data_partition
-from model import SAMRoad
-import graph_extraction
-import graph_utils
-import triage
+from sam_road.utils import load_config, create_output_dir_and_save_config
+from sam_road.dataset import cityscale_data_partition, read_rgb_img, get_patch_info_one_img
+from sam_road.dataset import spacenet_data_partition
+from sam_road.model import SAMRoad
+from sam_road import graph_extraction
+from sam_road import graph_utils
+from sam_road import triage
 # from triage import visualize_image_and_graph, rasterize_graph
 import pickle
 import scipy
